@@ -40,7 +40,7 @@ const TIMEOUT_MS = {
 const CONFIG = {
   codexTimeout: TIMEOUT_MS.DEFAULT,
   codexTimeoutXhigh: TIMEOUT_MS.XHIGH,
-  codexModel: "gpt-5.2-codex",
+  codexModel: process.env.CODEX_MODEL || "gpt-5.2-codex",
   maxRetries: 2,
   // Reasoning Effort 設定
   reasoningEffort: {
