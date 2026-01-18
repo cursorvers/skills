@@ -80,29 +80,57 @@ if [ "$ENV_TYPE" = "macos" ] || [ "$ENV_TYPE" = "linux" ]; then
   fi
 fi
 
-# 3. skillsリポジトリの確認/クローン
+# 3. リポジトリのクローン/更新
 echo ""
 echo "📥 リポジトリ確認..."
 
-if [ ! -d "$SKILLS_DIR/.git" ]; then
-  echo "skillsリポジトリをクローン..."
+# SSH接続テスト（共通）
+USE_HTTPS=false
+if ! ssh -T git@github.com 2>&1 | grep -q "successfully authenticated"; then
+  echo -e "${YELLOW}⚠️ SSH認証失敗。HTTPSを使用します。${NC}"
+  USE_HTTPS=true
+fi
 
-  # SSH接続テスト
-  USE_HTTPS=false
-  if ! ssh -T git@github.com 2>&1 | grep -q "successfully authenticated"; then
-    USE_HTTPS=true
-  fi
+# クローン用関数
+clone_or_update_repo() {
+  local repo=$1
+  local dest=$2
+  local ssh_url="git@github.com:cursorvers/${repo}.git"
+  local https_url="https://github.com/cursorvers/${repo}.git"
 
-  if [ "$USE_HTTPS" = true ]; then
-    git clone https://github.com/cursorvers/skills.git "$SKILLS_DIR"
+  if [ ! -d "${dest}/.git" ]; then
+    [ -d "$dest" ] && rm -rf "$dest"
+    echo -n "  クローン中: $repo → $dest ... "
+    if [ "$USE_HTTPS" = true ]; then
+      git clone --quiet "$https_url" "$dest"
+    else
+      git clone --quiet "$ssh_url" "$dest" 2>/dev/null || git clone --quiet "$https_url" "$dest"
+    fi
+    echo -e "${GREEN}完了${NC}"
   else
-    git clone git@github.com:cursorvers/skills.git "$SKILLS_DIR" || \
-    git clone https://github.com/cursorvers/skills.git "$SKILLS_DIR"
+    echo -n "  更新中: $repo ... "
+    cd "$dest" && git pull --ff-only --quiet 2>/dev/null && echo -e "${GREEN}完了${NC}" || echo -e "${YELLOW}スキップ${NC}"
   fi
-  echo -e "${GREEN}✓ skills cloned${NC}"
+}
+
+# ローカル環境の場合は全リポジトリをセットアップ
+if [ "$ENV_TYPE" = "macos" ] || [ "$ENV_TYPE" = "linux" ]; then
+  # claude-config → ~/.claude
+  clone_or_update_repo "claude-config" "$CLAUDE_DIR"
+
+  # skills → ~/Dev/skills
+  clone_or_update_repo "skills" "$SKILLS_DIR"
+
+  # harness → ~/.claude/harness
+  HARNESS_DIR="$CLAUDE_DIR/harness"
+  clone_or_update_repo "claude-code-harness" "$HARNESS_DIR"
 else
-  echo -e "${GREEN}✓ skills already exists${NC}"
-  cd "$SKILLS_DIR" && git pull --ff-only 2>/dev/null || true
+  # DevContainer/Codespaces の場合は skills のみ
+  if [ ! -d "$SKILLS_DIR/.git" ]; then
+    clone_or_update_repo "skills" "$SKILLS_DIR"
+  else
+    echo -e "${GREEN}✓ skills already exists${NC}"
+  fi
 fi
 
 # 4. シンボリックリンク作成
