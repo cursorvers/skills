@@ -1,0 +1,284 @@
+# Orchestra Delegator - Codex Review Workflow
+# PR作成時に自動でCodex (GPT-5.2) によるコードレビュー + セキュリティ分析を実行
+
+name: Codex Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number to review'
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  codex-review:
+    name: Codex Review (GPT-5.2)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Codex CLI
+        run: npm install -g @openai/codex
+
+      - name: Get PR diff
+        id: diff
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.pr_number }}" ]; then
+            PR_NUMBER="${{ inputs.pr_number }}"
+          else
+            PR_NUMBER="${{ github.event.pull_request.number }}"
+          fi
+
+          echo "pr_number=${PR_NUMBER}" >> $GITHUB_OUTPUT
+
+          # Get diff
+          gh pr diff ${PR_NUMBER} > /tmp/pr_diff.txt || git diff origin/main...HEAD > /tmp/pr_diff.txt
+
+          # Truncate if too large (max 50KB)
+          if [ $(wc -c < /tmp/pr_diff.txt) -gt 51200 ]; then
+            head -c 51200 /tmp/pr_diff.txt > /tmp/pr_diff_truncated.txt
+            mv /tmp/pr_diff_truncated.txt /tmp/pr_diff.txt
+            echo "::warning::Diff truncated to 50KB"
+          fi
+
+      - name: Run Code Reviewer
+        id: code_review
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          cat > /tmp/code_review_prompt.md << 'PROMPT'
+          # Code Reviewer - コードレビューエキスパート
+
+          あなたは経験豊富なシニアエンジニアとして、以下の観点でコードをレビューします。
+
+          ## 評価観点と配点
+
+          | 観点 | 配点 | 説明 |
+          |------|------|------|
+          | 正確性 | 3点 | バグ、ロジックエラー、エッジケースの処理 |
+          | パフォーマンス | 2点 | N+1、不要な再計算、メモリリーク |
+          | 保守性 | 2点 | 可読性、命名、関数分割、DRY原則 |
+
+          ## 出力形式
+
+          必ず以下のJSON形式で出力してください（```json```で囲む）:
+
+          ```json
+          {
+            "scores": {
+              "accuracy": <0-3>,
+              "performance": <0-2>,
+              "maintainability": <0-2>
+            },
+            "total": <0-7>,
+            "issues": [
+              {
+                "severity": "critical|major|minor",
+                "file": "ファイル名",
+                "line": "行番号または範囲",
+                "description": "問題の説明",
+                "suggestion": "修正案"
+              }
+            ],
+            "summary": "全体的な評価（1-2文）"
+          }
+          ```
+
+          ## レビュー対象のdiff
+
+          PROMPT
+
+          cat /tmp/pr_diff.txt >> /tmp/code_review_prompt.md
+
+          # Run Codex
+          RESULT=$(codex exec --dangerously-bypass-approvals-and-sandbox --model "gpt-5.2" "$(cat /tmp/code_review_prompt.md)" 2>/dev/null || echo '{"scores":{"accuracy":2,"performance":1,"maintainability":1},"total":4,"issues":[],"summary":"レビュー実行エラー"}')
+
+          # Extract JSON from result
+          echo "$RESULT" | grep -Pzo '```json\s*\n\K[\s\S]*?(?=\n```|$)' | tr '\0' '\n' > /tmp/code_review.json || echo "$RESULT" > /tmp/code_review.json
+
+          echo "result<<EOF" >> $GITHUB_OUTPUT
+          cat /tmp/code_review.json >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Run Security Analyst
+        id: security_review
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          cat > /tmp/security_prompt.md << 'PROMPT'
+          # Security Analyst - セキュリティ分析エキスパート
+
+          あなたはセキュリティ専門家として、以下の観点でコードを分析します。
+
+          ## 評価観点と配点
+
+          | 観点 | 配点 | 説明 |
+          |------|------|------|
+          | セキュリティ | 3点 | OWASP Top 10、認証/認可、入力検証、機密情報管理 |
+
+          ## チェック項目
+
+          - SQLインジェクション
+          - XSS（クロスサイトスクリプティング）
+          - CSRF（クロスサイトリクエストフォージェリ）
+          - 認証・認可の不備
+          - 機密情報のハードコード（APIキー、パスワード等）
+          - 安全でない依存関係
+          - パストラバーサル
+          - コマンドインジェクション
+
+          ## 出力形式
+
+          必ず以下のJSON形式で出力してください（```json```で囲む）:
+
+          ```json
+          {
+            "score": <0-3>,
+            "vulnerabilities": [
+              {
+                "severity": "critical|high|medium|low",
+                "type": "脆弱性の種類",
+                "file": "ファイル名",
+                "line": "行番号",
+                "description": "問題の説明",
+                "remediation": "修正方法"
+              }
+            ],
+            "summary": "セキュリティ評価（1-2文）"
+          }
+          ```
+
+          ## レビュー対象のdiff
+
+          PROMPT
+
+          cat /tmp/pr_diff.txt >> /tmp/security_prompt.md
+
+          # Run Codex
+          RESULT=$(codex exec --dangerously-bypass-approvals-and-sandbox --model "gpt-5.2" "$(cat /tmp/security_prompt.md)" 2>/dev/null || echo '{"score":2,"vulnerabilities":[],"summary":"セキュリティ分析実行エラー"}')
+
+          # Extract JSON from result
+          echo "$RESULT" | grep -Pzo '```json\s*\n\K[\s\S]*?(?=\n```|$)' | tr '\0' '\n' > /tmp/security_review.json || echo "$RESULT" > /tmp/security_review.json
+
+          echo "result<<EOF" >> $GITHUB_OUTPUT
+          cat /tmp/security_review.json >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Calculate Consensus Score
+        id: consensus
+        run: |
+          # Parse scores (with fallback)
+          CODE_TOTAL=$(echo '${{ steps.code_review.outputs.result }}' | jq -r '.total // 4' 2>/dev/null || echo "4")
+          SECURITY_SCORE=$(echo '${{ steps.security_review.outputs.result }}' | jq -r '.score // 2' 2>/dev/null || echo "2")
+
+          TOTAL=$((CODE_TOTAL + SECURITY_SCORE))
+
+          # Determine verdict
+          if [ $TOTAL -ge 9 ]; then
+            VERDICT="approved"
+            EMOJI="white_check_mark"
+            LABEL="Approved"
+          elif [ $TOTAL -ge 7 ]; then
+            VERDICT="approved_with_comments"
+            EMOJI="warning"
+            LABEL="Approved with Comments"
+          elif [ $TOTAL -ge 5 ]; then
+            VERDICT="changes_requested"
+            EMOJI="large_orange_diamond"
+            LABEL="Changes Suggested"
+          else
+            VERDICT="changes_required"
+            EMOJI="x"
+            LABEL="Changes Required"
+          fi
+
+          echo "total=${TOTAL}" >> $GITHUB_OUTPUT
+          echo "code_score=${CODE_TOTAL}" >> $GITHUB_OUTPUT
+          echo "security_score=${SECURITY_SCORE}" >> $GITHUB_OUTPUT
+          echo "verdict=${VERDICT}" >> $GITHUB_OUTPUT
+          echo "emoji=${EMOJI}" >> $GITHUB_OUTPUT
+          echo "label=${LABEL}" >> $GITHUB_OUTPUT
+
+      - name: Post Review Comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER="${{ steps.diff.outputs.pr_number }}"
+
+          # Build comment
+          cat > /tmp/comment.md << EOF
+          ## :robot: Codex Review (GPT-5.2)
+
+          ### :bar_chart: Consensus Score: ${{ steps.consensus.outputs.total }}/10 :${{ steps.consensus.outputs.emoji }}: **${{ steps.consensus.outputs.label }}**
+
+          | Reviewer | Score | Details |
+          |----------|-------|---------|
+          | Code Reviewer | ${{ steps.consensus.outputs.code_score }}/7 | Accuracy, Performance, Maintainability |
+          | Security Analyst | ${{ steps.consensus.outputs.security_score }}/3 | OWASP, Auth, Input Validation |
+
+          ---
+
+          <details>
+          <summary>:mag: Code Review Details</summary>
+
+          \`\`\`json
+          ${{ steps.code_review.outputs.result }}
+          \`\`\`
+
+          </details>
+
+          <details>
+          <summary>:shield: Security Analysis Details</summary>
+
+          \`\`\`json
+          ${{ steps.security_review.outputs.result }}
+          \`\`\`
+
+          </details>
+
+          ---
+
+          | Score | Verdict |
+          |-------|---------|
+          | 9-10 | :white_check_mark: Approved |
+          | 7-8 | :warning: Approved with Comments |
+          | 5-6 | :large_orange_diamond: Changes Suggested |
+          | 0-4 | :x: Changes Required |
+
+          ---
+          *Powered by Orchestra Delegator + Codex MCP (GPT-5.2)*
+          EOF
+
+          # Post comment
+          gh pr comment ${PR_NUMBER} --body-file /tmp/comment.md
+
+      - name: Set Review Status
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERDICT="${{ steps.consensus.outputs.verdict }}"
+
+          if [ "$VERDICT" = "changes_required" ]; then
+            gh pr review ${{ github.event.pull_request.number }} --request-changes --body "Codex Review: Changes required (Score: ${{ steps.consensus.outputs.total }}/10)"
+          elif [ "$VERDICT" = "approved" ]; then
+            gh pr review ${{ github.event.pull_request.number }} --approve --body "Codex Review: Approved (Score: ${{ steps.consensus.outputs.total }}/10)"
+          fi

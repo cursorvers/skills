@@ -27,38 +27,44 @@ fi
 echo ""
 echo "📥 リポジトリをクローン..."
 
-# claude-config → ~/.claude
-if [ ! -d ~/.claude/.git ]; then
-  rm -rf ~/.claude
-  git clone git@github.com:cursorvers/claude-config.git ~/.claude
-  echo "✓ claude-config → ~/.claude"
-else
-  echo "✓ claude-config already exists"
+# SSH接続テスト（失敗時はHTTPSにフォールバック）
+USE_HTTPS=false
+if ! ssh -T git@github.com 2>&1 | grep -q "successfully authenticated"; then
+  echo "⚠️ SSH認証失敗。HTTPSを使用します。"
+  USE_HTTPS=true
 fi
+
+# クローン用関数（SSH/HTTPSを自動選択）
+clone_repo() {
+  local repo=$1
+  local dest=$2
+  local ssh_url="git@github.com:cursorvers/${repo}.git"
+  local https_url="https://github.com/cursorvers/${repo}.git"
+
+  if [ ! -d "${dest}/.git" ]; then
+    [ -d "$dest" ] && rm -rf "$dest"
+    if [ "$USE_HTTPS" = true ]; then
+      git clone "$https_url" "$dest"
+    else
+      git clone "$ssh_url" "$dest" || git clone "$https_url" "$dest"
+    fi
+    echo "✓ ${repo} → ${dest}"
+  else
+    echo "✓ ${repo} already exists"
+  fi
+}
+
+# claude-config → ~/.claude
+clone_repo "claude-config" "$HOME/.claude"
 
 # skills → ~/Dev/skills
-if [ ! -d ~/Dev/skills/.git ]; then
-  git clone git@github.com:cursorvers/skills.git ~/Dev/skills
-  echo "✓ skills → ~/Dev/skills"
-else
-  echo "✓ skills already exists"
-fi
+clone_repo "skills" "$HOME/Dev/skills"
 
 # claude-code-harness → ~/.claude/harness
-if [ ! -d ~/.claude/harness/.git ]; then
-  git clone git@github.com:cursorvers/claude-code-harness.git ~/.claude/harness
-  echo "✓ claude-code-harness → ~/.claude/harness"
-else
-  echo "✓ claude-code-harness already exists"
-fi
+clone_repo "claude-code-harness" "$HOME/.claude/harness"
 
 # dotfiles → ~/dotfiles
-if [ ! -d ~/dotfiles/.git ]; then
-  git clone git@github.com:cursorvers/dotfiles.git ~/dotfiles
-  echo "✓ dotfiles → ~/dotfiles"
-else
-  echo "✓ dotfiles already exists"
-fi
+clone_repo "dotfiles" "$HOME/dotfiles"
 
 # 4. シンボリックリンク作成
 echo ""

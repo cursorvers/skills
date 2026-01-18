@@ -1,0 +1,129 @@
+name: GLM-4.7 Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  glm-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install openai
+
+      - name: Get changed files
+        id: changed
+        run: |
+          echo "files=$(git diff --name-only ${{ github.event.pull_request.base.sha }} ${{ github.sha }} | grep -E '\.(js|ts|tsx|py|go|rs)$' | head -10 | tr '\n' ' ')" >> $GITHUB_OUTPUT
+
+      - name: Run GLM-4.7 Code Review
+        if: steps.changed.outputs.files != ''
+        env:
+          ZAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+        run: |
+          cat << 'EOF' > /tmp/glm-review.js
+          const OpenAI = require('openai');
+          const fs = require('fs');
+
+          const CONFIG = {
+            baseURL: 'https://api.z.ai/api/coding/paas/v4/',
+            model: 'glm-4.7',
+            timeout: 180000,
+            maxRetries: 3,
+            retryDelay: 5000,
+          };
+
+          const client = new OpenAI({
+            apiKey: process.env.ZAI_API_KEY,
+            baseURL: CONFIG.baseURL,
+            timeout: CONFIG.timeout,
+          });
+
+          async function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+          }
+
+          async function callWithRetry(fn, retries = CONFIG.maxRetries) {
+            for (let i = 0; i < retries; i++) {
+              try {
+                return await fn();
+              } catch (error) {
+                const isRateLimit = error.status === 429;
+                const isTimeout = error.code === 'ETIMEDOUT' || error.code === 'ECONNABORTED';
+                const isRetryable = isRateLimit || isTimeout || error.status >= 500;
+
+                if (!isRetryable || i === retries - 1) throw error;
+
+                const delay = isRateLimit ? CONFIG.retryDelay * (i + 1) : CONFIG.retryDelay;
+                console.log(`Retry ${i + 1}/${retries} after ${delay}ms (${error.message})`);
+                await sleep(delay);
+              }
+            }
+          }
+
+          async function review(files) {
+            const fileList = files.trim().split(' ').filter(f => f);
+            if (fileList.length === 0) {
+              console.log('No files to review');
+              return;
+            }
+
+            let content = '';
+            for (const file of fileList) {
+              if (fs.existsSync(file)) {
+                content += `\n### ${file}\n\`\`\`\n${fs.readFileSync(file, 'utf-8').slice(0, 5000)}\n\`\`\`\n`;
+              }
+            }
+
+            const response = await callWithRetry(() =>
+              client.chat.completions.create({
+                model: CONFIG.model,
+                messages: [{
+                  role: 'user',
+                  content: `以下のコードをレビューしてください。問題点と改善案を日本語で簡潔に指摘してください。\n${content}`
+                }],
+                max_tokens: 4096,
+              })
+            );
+
+            console.log('## GLM-4.7 Code Review\n');
+            console.log(response.choices[0].message.content);
+          }
+
+          review(process.argv[2] || '').catch(err => {
+            console.error('Review failed:', err.message);
+            process.exit(1);
+          });
+          EOF
+
+          node /tmp/glm-review.js "${{ steps.changed.outputs.files }}" > review_result.md
+          cat review_result.md
+
+      - name: Comment on PR
+        if: steps.changed.outputs.files != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const review = fs.readFileSync('review_result.md', 'utf-8');
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: review
+            });
