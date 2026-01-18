@@ -4,17 +4,17 @@
 # 複数PC間で .claude/ 設定を同期
 # ============================================
 
-set -e
+set -euo pipefail
 
 echo "🔄 Claude Config 同期"
 echo "=========================================="
 
 # カラー定義
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly CYAN='\033[0;36m'
+readonly NC='\033[0m'
 
 # パス設定
 CLAUDE_DIR="${CLAUDE_DIR:-$HOME/.claude}"
@@ -23,6 +23,16 @@ HARNESS_DIR="${HARNESS_DIR:-$HOME/.claude/harness}"
 
 # 操作モード
 MODE="${1:-status}"
+
+# GitHub組織名（環境変数で上書き可能）
+GITHUB_ORG="${GITHUB_ORG:-cursorvers}"
+
+# SSH/HTTPS フラグ
+USE_HTTPS=false
+
+# ============================================
+# ユーティリティ関数
+# ============================================
 
 show_help() {
   echo "使い方: $0 [コマンド]"
@@ -36,10 +46,61 @@ show_help() {
   echo ""
 }
 
+# パス検証（rm -rf の前に必ず呼び出す）
+validate_path() {
+  local path="$1"
+  local description="${2:-path}"
+
+  # 空文字チェック
+  if [ -z "$path" ]; then
+    echo -e "${RED}エラー: ${description} が空です${NC}" >&2
+    return 1
+  fi
+
+  # ルートディレクトリチェック
+  if [ "$path" = "/" ]; then
+    echo -e "${RED}エラー: ${description} がルートディレクトリです${NC}" >&2
+    return 1
+  fi
+
+  # ホームディレクトリ直下チェック
+  if [ "$path" = "$HOME" ]; then
+    echo -e "${RED}エラー: ${description} がホームディレクトリです${NC}" >&2
+    return 1
+  fi
+
+  # 重要なシステムディレクトリチェック
+  case "$path" in
+    /bin|/sbin|/usr|/etc|/var|/tmp|/opt|/System|/Library)
+      echo -e "${RED}エラー: ${description} がシステムディレクトリです${NC}" >&2
+      return 1
+      ;;
+  esac
+
+  # 最低限のパス深度チェック（$HOME/xxx 以上の深さが必要）
+  local depth
+  depth=$(echo "$path" | tr '/' '\n' | grep -c .)
+  if [ "$depth" -lt 3 ]; then
+    echo -e "${RED}エラー: ${description} のパスが浅すぎます: $path${NC}" >&2
+    return 1
+  fi
+
+  return 0
+}
+
+# SSH認証チェック
+check_ssh_auth() {
+  if ssh -T git@github.com 2>&1 | grep -q "successfully authenticated"; then
+    return 0
+  else
+    return 1
+  fi
+}
+
 # リポジトリの状態確認
 check_repo_status() {
-  local dir=$1
-  local name=$2
+  local dir="$1"
+  local name="$2"
 
   if [ ! -d "$dir/.git" ]; then
     echo -e "${RED}✗ $name: 未クローン${NC}"
@@ -47,10 +108,14 @@ check_repo_status() {
   fi
 
   cd "$dir"
-  local branch=$(git branch --show-current 2>/dev/null || echo "detached")
-  local status=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
-  local ahead=$(git rev-list --count @{u}..HEAD 2>/dev/null || echo "?")
-  local behind=$(git rev-list --count HEAD..@{u} 2>/dev/null || echo "?")
+  local branch
+  branch=$(git branch --show-current 2>/dev/null || echo "detached")
+  local status
+  status=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+  local ahead
+  ahead=$(git rev-list --count @{u}..HEAD 2>/dev/null || echo "?")
+  local behind
+  behind=$(git rev-list --count HEAD..@{u} 2>/dev/null || echo "?")
 
   if [ "$status" -gt 0 ]; then
     echo -e "${YELLOW}⚠ $name: ${status}件の変更あり (${branch})${NC}"
@@ -63,69 +128,132 @@ check_repo_status() {
   fi
 }
 
+# リポジトリをクローン
+clone_repo() {
+  local repo="$1"
+  local dest="$2"
+  local ssh_url="git@github.com:${GITHUB_ORG}/${repo}.git"
+  local https_url="https://github.com/${GITHUB_ORG}/${repo}.git"
+
+  if [ ! -d "${dest}/.git" ]; then
+    # 既存ディレクトリがある場合は削除（パス検証必須）
+    if [ -d "$dest" ]; then
+      if ! validate_path "$dest" "クローン先"; then
+        echo -e "${RED}エラー: 安全でないパスのため削除をスキップ${NC}" >&2
+        return 1
+      fi
+      rm -rf "$dest"
+    fi
+
+    echo -n "  クローン中: $repo → $dest ... "
+    if [ "$USE_HTTPS" = true ]; then
+      git clone --quiet "$https_url" "$dest"
+    else
+      git clone --quiet "$ssh_url" "$dest" 2>/dev/null || git clone --quiet "$https_url" "$dest"
+    fi
+    echo -e "${GREEN}完了${NC}"
+  else
+    echo -e "  $repo: ${GREEN}既存${NC}"
+  fi
+}
+
+# リポジトリに対して操作を実行
+for_each_repo() {
+  local callback="$1"
+  for repo_info in "${REPOS[@]}"; do
+    local dir="${repo_info%%:*}"
+    local name="${repo_info##*:}"
+    "$callback" "$dir" "$name"
+  done
+}
+
+# pull操作
+do_pull() {
+  local dir="$1"
+  local name="$2"
+  if [ -d "$dir/.git" ]; then
+    echo -n "  $name: "
+    cd "$dir"
+    if git pull --ff-only 2>/dev/null; then
+      echo -e "${GREEN}更新完了${NC}"
+    else
+      echo -e "${YELLOW}マージが必要（手動で解決してください）${NC}"
+    fi
+  else
+    echo -e "  $name: ${RED}スキップ（未クローン）${NC}"
+  fi
+}
+
+# push操作
+do_push() {
+  local dir="$1"
+  local name="$2"
+  if [ -d "$dir/.git" ]; then
+    cd "$dir"
+    local local_changes
+    local_changes=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$local_changes" -gt 0 ]; then
+      echo -e "  $name: ${YELLOW}未コミットの変更があります。先にコミットしてください${NC}"
+    else
+      echo -n "  $name: "
+      if git push 2>/dev/null; then
+        echo -e "${GREEN}プッシュ完了${NC}"
+      else
+        echo -e "${YELLOW}プッシュ失敗（権限またはリモート設定を確認）${NC}"
+      fi
+    fi
+  else
+    echo -e "  $name: ${RED}スキップ（未クローン）${NC}"
+  fi
+}
+
+# diff操作
+do_diff() {
+  local dir="$1"
+  local name="$2"
+  if [ -d "$dir/.git" ]; then
+    cd "$dir"
+    local local_changes
+    local_changes=$(git status --porcelain 2>/dev/null)
+    if [ -n "$local_changes" ]; then
+      echo ""
+      echo -e "${CYAN}[$name]${NC}"
+      echo "$local_changes"
+    fi
+  fi
+}
+
+# ============================================
 # 同期対象のリポジトリ
+# ============================================
 REPOS=(
   "$CLAUDE_DIR:claude-config"
   "$SKILLS_DIR:skills"
   "$HARNESS_DIR:harness"
 )
 
+# ============================================
+# メイン処理
+# ============================================
 case $MODE in
   status)
     echo ""
     echo "📊 同期状態:"
-    for repo_info in "${REPOS[@]}"; do
-      dir="${repo_info%%:*}"
-      name="${repo_info##*:}"
-      check_repo_status "$dir" "$name"
-    done
+    for_each_repo check_repo_status
     echo ""
     ;;
 
   pull)
     echo ""
     echo "📥 リモートから取得:"
-    for repo_info in "${REPOS[@]}"; do
-      dir="${repo_info%%:*}"
-      name="${repo_info##*:}"
-      if [ -d "$dir/.git" ]; then
-        echo -n "  $name: "
-        cd "$dir"
-        if git pull --ff-only 2>/dev/null; then
-          echo -e "${GREEN}更新完了${NC}"
-        else
-          echo -e "${YELLOW}マージが必要（手動で解決してください）${NC}"
-        fi
-      else
-        echo -e "  $name: ${RED}スキップ（未クローン）${NC}"
-      fi
-    done
+    for_each_repo do_pull
     echo ""
     ;;
 
   push)
     echo ""
     echo "📤 リモートにプッシュ:"
-    for repo_info in "${REPOS[@]}"; do
-      dir="${repo_info%%:*}"
-      name="${repo_info##*:}"
-      if [ -d "$dir/.git" ]; then
-        cd "$dir"
-        local_changes=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
-        if [ "$local_changes" -gt 0 ]; then
-          echo -e "  $name: ${YELLOW}未コミットの変更があります。先にコミットしてください${NC}"
-        else
-          echo -n "  $name: "
-          if git push 2>/dev/null; then
-            echo -e "${GREEN}プッシュ完了${NC}"
-          else
-            echo -e "${YELLOW}プッシュ失敗（権限またはリモート設定を確認）${NC}"
-          fi
-        fi
-      else
-        echo -e "  $name: ${RED}スキップ（未クローン）${NC}"
-      fi
-    done
+    for_each_repo do_push
     echo ""
     ;;
 
@@ -135,31 +263,10 @@ case $MODE in
     echo ""
 
     # SSH接続テスト
-    USE_HTTPS=false
-    if ! ssh -T git@github.com 2>&1 | grep -q "successfully authenticated"; then
+    if ! check_ssh_auth; then
       echo -e "${YELLOW}⚠️ SSH認証失敗。HTTPSを使用します。${NC}"
       USE_HTTPS=true
     fi
-
-    clone_repo() {
-      local repo=$1
-      local dest=$2
-      local ssh_url="git@github.com:cursorvers/${repo}.git"
-      local https_url="https://github.com/cursorvers/${repo}.git"
-
-      if [ ! -d "${dest}/.git" ]; then
-        [ -d "$dest" ] && rm -rf "$dest"
-        echo -n "  クローン中: $repo → $dest ... "
-        if [ "$USE_HTTPS" = true ]; then
-          git clone --quiet "$https_url" "$dest"
-        else
-          git clone --quiet "$ssh_url" "$dest" 2>/dev/null || git clone --quiet "$https_url" "$dest"
-        fi
-        echo -e "${GREEN}完了${NC}"
-      else
-        echo -e "  $repo: ${GREEN}既存${NC}"
-      fi
-    }
 
     # claude-config
     clone_repo "claude-config" "$CLAUDE_DIR"
@@ -188,19 +295,7 @@ case $MODE in
   diff)
     echo ""
     echo "📝 未コミットの変更:"
-    for repo_info in "${REPOS[@]}"; do
-      dir="${repo_info%%:*}"
-      name="${repo_info##*:}"
-      if [ -d "$dir/.git" ]; then
-        cd "$dir"
-        local_changes=$(git status --porcelain 2>/dev/null)
-        if [ -n "$local_changes" ]; then
-          echo ""
-          echo -e "${CYAN}[$name]${NC}"
-          echo "$local_changes"
-        fi
-      fi
-    done
+    for_each_repo do_diff
     echo ""
     ;;
 

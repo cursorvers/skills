@@ -4,26 +4,75 @@
 # どのPCでも動作するパス抽象化版
 # ============================================
 
-set -e
+set -euo pipefail
 
 echo "🚀 Cursorvers 開発環境セットアップ開始"
 echo "=========================================="
 
 # カラー定義
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly NC='\033[0m'
+
+# GitHub組織名（環境変数で上書き可能）
+GITHUB_ORG="${GITHUB_ORG:-cursorvers}"
+
+# ============================================
+# ユーティリティ関数
+# ============================================
+
+# パス検証（rm -rf の前に必ず呼び出す）
+validate_path() {
+  local path="$1"
+  local description="${2:-path}"
+
+  # 空文字チェック
+  if [ -z "$path" ]; then
+    echo -e "${RED}エラー: ${description} が空です${NC}" >&2
+    return 1
+  fi
+
+  # ルートディレクトリチェック
+  if [ "$path" = "/" ]; then
+    echo -e "${RED}エラー: ${description} がルートディレクトリです${NC}" >&2
+    return 1
+  fi
+
+  # ホームディレクトリ直下チェック
+  if [ "$path" = "$HOME" ]; then
+    echo -e "${RED}エラー: ${description} がホームディレクトリです${NC}" >&2
+    return 1
+  fi
+
+  # 重要なシステムディレクトリチェック
+  case "$path" in
+    /bin|/sbin|/usr|/etc|/var|/tmp|/opt|/System|/Library)
+      echo -e "${RED}エラー: ${description} がシステムディレクトリです${NC}" >&2
+      return 1
+      ;;
+  esac
+
+  # 最低限のパス深度チェック
+  local depth
+  depth=$(echo "$path" | tr '/' '\n' | grep -c . || echo "0")
+  if [ "$depth" -lt 3 ]; then
+    echo -e "${RED}エラー: ${description} のパスが浅すぎます: $path${NC}" >&2
+    return 1
+  fi
+
+  return 0
+}
 
 # 環境検出
 detect_environment() {
-  if [ -n "$CODESPACES" ]; then
+  if [ -n "${CODESPACES:-}" ]; then
     echo "codespaces"
-  elif [ -n "$REMOTE_CONTAINERS" ]; then
+  elif [ -n "${REMOTE_CONTAINERS:-}" ]; then
     echo "devcontainer"
-  elif [[ "$OSTYPE" == "darwin"* ]]; then
+  elif [[ "${OSTYPE:-}" == "darwin"* ]]; then
     echo "macos"
-  elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+  elif [[ "${OSTYPE:-}" == "linux-gnu"* ]]; then
     echo "linux"
   else
     echo "unknown"
@@ -93,13 +142,20 @@ fi
 
 # クローン用関数
 clone_or_update_repo() {
-  local repo=$1
-  local dest=$2
-  local ssh_url="git@github.com:cursorvers/${repo}.git"
-  local https_url="https://github.com/cursorvers/${repo}.git"
+  local repo="$1"
+  local dest="$2"
+  local ssh_url="git@github.com:${GITHUB_ORG}/${repo}.git"
+  local https_url="https://github.com/${GITHUB_ORG}/${repo}.git"
 
   if [ ! -d "${dest}/.git" ]; then
-    [ -d "$dest" ] && rm -rf "$dest"
+    # 既存ディレクトリがある場合は削除（パス検証必須）
+    if [ -d "$dest" ]; then
+      if ! validate_path "$dest" "クローン先"; then
+        echo -e "${RED}エラー: 安全でないパスのため削除をスキップ${NC}" >&2
+        return 1
+      fi
+      rm -rf "$dest"
+    fi
     echo -n "  クローン中: $repo → $dest ... "
     if [ "$USE_HTTPS" = true ]; then
       git clone --quiet "$https_url" "$dest"
