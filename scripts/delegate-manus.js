@@ -33,8 +33,8 @@ const CONFIG = {
   pollInterval: 30000, // 30秒（ステータス確認間隔）
   maxPollAttempts: 120, // 最大1時間ポーリング
   credits: {
-    limit: 1500, // 現在の残高
-    warningThreshold: 300, // 警告閾値
+    limit: parseInt(process.env.MANUS_CREDIT_LIMIT, 10) || 1500, // 環境変数優先
+    warningThreshold: parseInt(process.env.MANUS_CREDIT_WARNING, 10) || 300,
     estimatePerTask: {
       browser: 50,
       research: 100,

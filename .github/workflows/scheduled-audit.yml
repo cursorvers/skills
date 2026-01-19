@@ -183,25 +183,34 @@ jobs:
       - name: Trigger Manus investigation
         env:
           MANUS_API_KEY: ${{ secrets.MANUS_API_KEY }}
+          SECURITY_RESULT: ${{ needs.security-audit.result }}
+          QUALITY_RESULT: ${{ needs.quality-audit.result }}
+          REPO_NAME: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           echo "🤖 Triggering Manus for detailed investigation..."
 
-          # 失敗したジョブの情報を収集
-          FAILED_JOBS="${{ needs.security-audit.result }},${{ needs.quality-audit.result }}"
-          TASK="GitHub Actions 定期監査で異常検出。失敗ジョブ: $FAILED_JOBS。リポジトリ: ${{ github.repository }}。詳細調査と修正提案をしてください。"
+          # jq で安全に JSON を生成（インジェクション対策）
+          JSON_PAYLOAD=$(jq -n \
+            --arg content "GitHub Actions 定期監査で異常検出。失敗ジョブ: security=$SECURITY_RESULT, quality=$QUALITY_RESULT。リポジトリ: $REPO_NAME。詳細調査と修正提案をしてください。" \
+            --arg type "research" \
+            --arg source "github-actions-audit" \
+            --arg repo "$REPO_NAME" \
+            --arg run_id "$RUN_ID" \
+            '{
+              content: $content,
+              type: $type,
+              metadata: {
+                source: $source,
+                repo: $repo,
+                run_id: $run_id
+              }
+            }')
 
           # Manus API 呼び出し
           curl -X POST "https://api.manus.im/v1/tasks" \
             -H "Authorization: Bearer $MANUS_API_KEY" \
             -H "Content-Type: application/json" \
-            -d "{
-              \"content\": \"$TASK\",
-              \"type\": \"research\",
-              \"metadata\": {
-                \"source\": \"github-actions-audit\",
-                \"repo\": \"${{ github.repository }}\",
-                \"run_id\": \"${{ github.run_id }}\"
-              }
-            }" || echo "::warning::Manus API call failed"
+            -d "$JSON_PAYLOAD" || echo "::warning::Manus API call failed"
 
           echo "✅ Manus investigation triggered"
