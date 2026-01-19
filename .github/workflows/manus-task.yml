@@ -1,0 +1,67 @@
+name: Manus Task
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: 'Task to execute (browser automation, research, etc.)'
+        required: true
+        type: string
+      task_type:
+        description: 'Task type'
+        required: true
+        type: choice
+        options:
+          - browser
+          - research
+          - default
+        default: 'default'
+      max_credits:
+        description: 'Maximum credits to spend'
+        required: false
+        type: number
+        default: 100
+
+jobs:
+  execute-manus-task:
+    name: Execute Manus Task
+    runs-on: ubuntu-latest
+    timeout-minutes: 120  # 2時間タイムアウト
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Validate credits
+        run: |
+          echo "📊 Task: ${{ inputs.task }}"
+          echo "📊 Type: ${{ inputs.task_type }}"
+          echo "📊 Max Credits: ${{ inputs.max_credits }}"
+
+      - name: Execute Manus Task
+        env:
+          MANUS_API_KEY: ${{ secrets.MANUS_API_KEY }}
+        run: |
+          # Copy delegate script from skills
+          cp ~/.claude/skills/orchestra-delegator/scripts/delegate-manus.js ./delegate-manus.js 2>/dev/null || \
+          curl -sL https://raw.githubusercontent.com/cursorvers/skills/main/scripts/delegate-manus.js -o delegate-manus.js
+
+          node delegate-manus.js \
+            -t "${{ inputs.task }}" \
+            --${{ inputs.task_type }} \
+            --max-credits ${{ inputs.max_credits }}
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: manus-task-result
+          path: |
+            *.json
+            *.md
+          retention-days: 30
