@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   lint-js:
     name: Lint JavaScript
@@ -46,11 +49,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install PyYAML
+        run: pip install pyyaml
+
       - name: Validate workflow files
         run: |
           for file in .github/workflows/*.yml; do
             echo "Validating $file..."
-            python3 -c "import yaml; yaml.safe_load(open('$file'))" || exit 1
+            python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" "$file" || exit 1
           done
           echo "All YAML files are valid"
 
