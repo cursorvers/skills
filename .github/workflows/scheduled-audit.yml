@@ -165,12 +165,15 @@ jobs:
           path: audit-summary.md
           retention-days: 90
 
-  # 異常検出時に Manus で詳細調査
+  # 異常検出時に Manus で詳細調査（Guard Rail v2.0 対応）
   manus-investigation:
     name: Manus Investigation (on failure)
     runs-on: ubuntu-latest
     needs: [security-audit, quality-audit]
     if: failure()
+    outputs:
+      severity: ${{ steps.determine-severity.outputs.severity }}
+      manus_triggered: ${{ steps.manus-call.outputs.triggered }}
 
     steps:
       - uses: actions/checkout@v4
@@ -180,37 +183,102 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Trigger Manus investigation
+      - name: Determine severity level
+        id: determine-severity
         env:
-          MANUS_API_KEY: ${{ secrets.MANUS_API_KEY }}
           SECURITY_RESULT: ${{ needs.security-audit.result }}
           QUALITY_RESULT: ${{ needs.quality-audit.result }}
+        run: |
+          echo "Determining severity level..."
+          echo "  Security: $SECURITY_RESULT"
+          echo "  Quality: $QUALITY_RESULT"
+
+          # 重大度判定ロジック
+          if [ "$SECURITY_RESULT" = "failure" ]; then
+            # セキュリティ失敗 = 重大
+            SEVERITY="severe"
+          elif [ "$QUALITY_RESULT" = "failure" ]; then
+            # 品質のみ失敗 = 中程度
+            SEVERITY="moderate"
+          else
+            # その他 = 軽微
+            SEVERITY="minor"
+          fi
+
+          echo "severity=$SEVERITY" >> $GITHUB_OUTPUT
+          echo "Severity determined: $SEVERITY"
+
+      - name: Call Manus via Guard Rail
+        id: manus-call
+        env:
+          MANUS_API_KEY: ${{ secrets.MANUS_API_KEY }}
+          MANUS_CREDIT_LIMIT: ${{ vars.MANUS_CREDIT_LIMIT || '1500' }}
+          SECURITY_RESULT: ${{ needs.security-audit.result }}
+          QUALITY_RESULT: ${{ needs.quality-audit.result }}
+          SEVERITY: ${{ steps.determine-severity.outputs.severity }}
           REPO_NAME: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
         run: |
-          echo "🤖 Triggering Manus for detailed investigation..."
+          echo "Invoking Manus with Guard Rail v2.0..."
 
-          # jq で安全に JSON を生成（インジェクション対策）
-          JSON_PAYLOAD=$(jq -n \
-            --arg content "GitHub Actions 定期監査で異常検出。失敗ジョブ: security=$SECURITY_RESULT, quality=$QUALITY_RESULT。リポジトリ: $REPO_NAME。詳細調査と修正提案をしてください。" \
-            --arg type "research" \
-            --arg source "github-actions-audit" \
-            --arg repo "$REPO_NAME" \
-            --arg run_id "$RUN_ID" \
-            '{
-              content: $content,
-              type: $type,
-              metadata: {
-                source: $source,
-                repo: $repo,
-                run_id: $run_id
-              }
-            }')
+          # タスク内容を安全に構築
+          TASK_CONTENT="GitHub Actions 定期監査で異常検出。
+          失敗ジョブ: security=$SECURITY_RESULT, quality=$QUALITY_RESULT
+          リポジトリ: $REPO_NAME
+          Run ID: $RUN_ID
+          詳細調査と修正提案をしてください。"
 
-          # Manus API 呼び出し
-          curl -X POST "https://api.manus.im/v1/tasks" \
-            -H "Authorization: Bearer $MANUS_API_KEY" \
-            -H "Content-Type: application/json" \
-            -d "$JSON_PAYLOAD" || echo "::warning::Manus API call failed"
+          # Guard Rail 経由で Manus 呼び出し
+          # --skip-approval: CI では承認済みとして扱う（severity check が通れば）
+          # --severity: 多段階閾値チェック
+          node scripts/delegate-manus.js \
+            -t "$TASK_CONTENT" \
+            --research \
+            --severity "$SEVERITY" \
+            --skip-approval \
+            --max-credits 150
 
-          echo "✅ Manus investigation triggered"
+          EXIT_CODE=$?
+
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "triggered=true" >> $GITHUB_OUTPUT
+            echo "Manus investigation completed"
+          elif [ $EXIT_CODE -eq 2 ]; then
+            echo "triggered=false" >> $GITHUB_OUTPUT
+            echo "::warning::Manus call blocked by guard rail (approval required)"
+          else
+            echo "triggered=false" >> $GITHUB_OUTPUT
+            echo "::warning::Manus API call failed (exit code: $EXIT_CODE)"
+          fi
+
+      - name: Create fallback issue (if Manus blocked/failed)
+        if: steps.manus-call.outputs.triggered != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SEVERITY: ${{ steps.determine-severity.outputs.severity }}
+          SECURITY_RESULT: ${{ needs.security-audit.result }}
+          QUALITY_RESULT: ${{ needs.quality-audit.result }}
+        run: |
+          echo "Creating fallback GitHub issue..."
+
+          ISSUE_BODY=$(cat <<EOF
+          ## Audit Failure Report
+
+          **Severity**: $SEVERITY
+          **Security Audit**: $SECURITY_RESULT
+          **Quality Audit**: $QUALITY_RESULT
+          **Run ID**: ${{ github.run_id }}
+
+          ### Action Required
+          Manus investigation was not triggered (blocked by guard rail or API error).
+          Manual review required.
+
+          ### Links
+          - [Workflow Run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          EOF
+          )
+
+          gh issue create \
+            --title "[Audit] Manual review required - $SEVERITY severity" \
+            --body "$ISSUE_BODY" \
+            --label "audit,needs-review" || echo "::warning::Failed to create issue"
