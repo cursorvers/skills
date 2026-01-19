@@ -164,3 +164,44 @@ jobs:
           name: audit-summary
           path: audit-summary.md
           retention-days: 90
+
+  # 異常検出時に Manus で詳細調査
+  manus-investigation:
+    name: Manus Investigation (on failure)
+    runs-on: ubuntu-latest
+    needs: [security-audit, quality-audit]
+    if: failure()
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Trigger Manus investigation
+        env:
+          MANUS_API_KEY: ${{ secrets.MANUS_API_KEY }}
+        run: |
+          echo "🤖 Triggering Manus for detailed investigation..."
+
+          # 失敗したジョブの情報を収集
+          FAILED_JOBS="${{ needs.security-audit.result }},${{ needs.quality-audit.result }}"
+          TASK="GitHub Actions 定期監査で異常検出。失敗ジョブ: $FAILED_JOBS。リポジトリ: ${{ github.repository }}。詳細調査と修正提案をしてください。"
+
+          # Manus API 呼び出し
+          curl -X POST "https://api.manus.im/v1/tasks" \
+            -H "Authorization: Bearer $MANUS_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"content\": \"$TASK\",
+              \"type\": \"research\",
+              \"metadata\": {
+                \"source\": \"github-actions-audit\",
+                \"repo\": \"${{ github.repository }}\",
+                \"run_id\": \"${{ github.run_id }}\"
+              }
+            }" || echo "::warning::Manus API call failed"
+
+          echo "✅ Manus investigation triggered"
