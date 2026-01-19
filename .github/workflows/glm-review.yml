@@ -96,7 +96,7 @@ jobs:
                   role: 'user',
                   content: `以下のコードをレビューしてください。問題点と改善案を日本語で簡潔に指摘してください。\n${content}`
                 }],
-                max_tokens: 4096,
+                max_tokens: 8192,
               })
             );
 

@@ -1,39 +1,39 @@
 {
-  "name": "Cursorvers Skills Dev",
-  "image": "mcr.microsoft.com/devcontainers/typescript-node:20",
+  "name": "Skills Development",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:20",
 
   "features": {
-    "ghcr.io/devcontainers/features/github-cli:1": {}
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "installZsh": true,
+      "configureZshAsDefaultShell": true
+    }
   },
 
   "customizations": {
     "vscode": {
       "extensions": [
-        "dbaeumer.vscode-eslint",
+        "github.copilot",
         "esbenp.prettier-vscode",
-        "GitHub.copilot"
+        "dbaeumer.vscode-eslint",
+        "bradlc.vscode-tailwindcss"
       ],
       "settings": {
-        "terminal.integrated.defaultProfile.linux": "zsh"
+        "terminal.integrated.defaultProfile.linux": "zsh",
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "esbenp.prettier-vscode",
+        "git.autofetch": true
       }
     }
   },
 
-  "postCreateCommand": "bash .devcontainer/setup.sh",
+  "postCreateCommand": "npm install && echo '✅ Dependencies installed'",
+
+  "postStartCommand": "git pull --rebase origin main 2>/dev/null || true && echo '✅ Synced with remote'",
 
   "remoteEnv": {
-    "WORKSPACE_ROOT": "${containerWorkspaceFolder}",
-    "CLAUDE_CONFIG_DIR": "${containerWorkspaceFolder}/.claude-local",
     "ZAI_API_KEY": "${localEnv:ZAI_API_KEY}",
     "GEMINI_API_KEY": "${localEnv:GEMINI_API_KEY}",
     "OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY}"
-  },
-
-  "mounts": [
-    "source=${localEnv:HOME}/.claude,target=/home/node/.claude-host,type=bind,consistency=cached"
-  ],
-
-  "containerUser": "node",
-
-  "forwardPorts": [3000, 5173, 8080]
+  }
 }
