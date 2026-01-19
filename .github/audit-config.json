@@ -1,0 +1,267 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "cursorvers 営業 Workflow 全体監査設定 - Single Source of Truth",
+
+  "schedule": {
+    "cron": "0 0 * * *",
+    "timezone": "Asia/Tokyo",
+    "description": "毎朝 JST 9:00 (UTC 0:00) に全システム監査"
+  },
+
+  "notification": {
+    "discord": {
+      "channel": "#monitoring",
+      "webhookSecretName": "DISCORD_MONITORING_WEBHOOK"
+    },
+    "github": {
+      "createIssue": true,
+      "labels": ["audit", "needs-review"]
+    }
+  },
+
+  "tiers": {
+    "CRITICAL": {
+      "description": "システム入口・認証・金銭・機密",
+      "failureAction": "immediate_alert",
+      "manusInvestigation": true,
+      "repositories": [
+        {
+          "name": "cursorvers_line_free_dev",
+          "owner": "cursorvers",
+          "checks": [
+            {
+              "id": "front-door-signature",
+              "name": "Front Door 署名検証",
+              "type": "file_exists_and_contains",
+              "path": "functions/relay/index.ts",
+              "pattern": "crypto\\.createHmac|X-Line-Signature",
+              "severity": "severe"
+            },
+            {
+              "id": "github-actions-active",
+              "name": "GitHub Actions Workflow 有効化",
+              "type": "workflow_status",
+              "workflows": ["line-event.yml", "manus-progress.yml"],
+              "expectedState": "active",
+              "severity": "severe"
+            },
+            {
+              "id": "supabase-rls",
+              "name": "Supabase RLS ポリシー",
+              "type": "file_contains",
+              "path": "supabase/migrations/*.sql",
+              "pattern": "CREATE POLICY|ALTER TABLE.*ENABLE ROW LEVEL SECURITY",
+              "severity": "severe"
+            },
+            {
+              "id": "deduplication",
+              "name": "重複排除ロジック",
+              "type": "file_contains",
+              "path": "functions/relay/index.ts",
+              "pattern": "dedup|idempotency|cache\\.get",
+              "severity": "moderate"
+            }
+          ]
+        },
+        {
+          "name": "cursorvers_discord_dev",
+          "owner": "cursorvers",
+          "checks": [
+            {
+              "id": "webhook-signature",
+              "name": "Webhook 署名検証",
+              "type": "file_contains",
+              "path": "apps/discord-bot/src/webhooks/server.ts",
+              "pattern": "verifySignature|X-Line-Signature|crypto",
+              "severity": "severe"
+            },
+            {
+              "id": "phi-security-filter",
+              "name": "PHI セキュリティフィルタ",
+              "type": "file_contains",
+              "path": "apps/discord-bot/src/**/*.ts",
+              "pattern": "PHI|sanitize|redact|mask",
+              "severity": "severe"
+            },
+            {
+              "id": "heartbeat-monitor",
+              "name": "Heartbeat 監視",
+              "type": "file_exists",
+              "path": "apps/discord-bot/src/**/heartbeat*.ts",
+              "severity": "moderate"
+            }
+          ]
+        },
+        {
+          "name": "skills",
+          "owner": "cursorvers",
+          "checks": [
+            {
+              "id": "manus-guard-rail",
+              "name": "Manus Guard Rail 設定",
+              "type": "file_contains",
+              "path": "scripts/delegate-manus.js",
+              "pattern": "checkApproval|checkCreditLimits|severity",
+              "severity": "severe"
+            },
+            {
+              "id": "quality-gates-manus",
+              "name": "Quality Gates Manus 設定",
+              "type": "json_key_exists",
+              "path": "../.claude/rules/quality-gates.json",
+              "key": "manus.approval",
+              "severity": "moderate"
+            }
+          ]
+        }
+      ]
+    },
+
+    "HIGH": {
+      "description": "ビジネスロジック・監視・エスカレーション",
+      "failureAction": "alert_and_issue",
+      "manusInvestigation": false,
+      "repositories": [
+        {
+          "name": "cursorvers_line_paid_dev",
+          "owner": "cursorvers",
+          "checks": [
+            {
+              "id": "firestore-rules",
+              "name": "Firestore Security Rules",
+              "type": "file_exists",
+              "path": "firestore.rules",
+              "severity": "moderate"
+            },
+            {
+              "id": "member-management",
+              "name": "会員管理ロジック",
+              "type": "file_contains",
+              "path": "apps/line-plus-bot/src/**/*.ts",
+              "pattern": "subscription|member|updateMember",
+              "severity": "moderate"
+            }
+          ]
+        },
+        {
+          "name": "Cursorvers_LINEsystem",
+          "owner": "cursorvers",
+          "checks": [
+            {
+              "id": "miyabi-agents",
+              "name": "Miyabi エージェント設定",
+              "type": "file_exists",
+              "path": "agents/*.md",
+              "severity": "moderate"
+            },
+            {
+              "id": "ci-cd-pipeline",
+              "name": "CI/CD パイプライン",
+              "type": "workflow_status",
+              "workflows": ["ci.yml", "deploy.yml"],
+              "expectedState": "active",
+              "severity": "moderate"
+            }
+          ]
+        }
+      ]
+    },
+
+    "MEDIUM": {
+      "description": "データ保護・運用・可用性",
+      "failureAction": "daily_report",
+      "manusInvestigation": false,
+      "repositories": [
+        {
+          "name": "claude-config",
+          "owner": "cursorvers",
+          "checks": [
+            {
+              "id": "config-integrity",
+              "name": "設定ファイル整合性",
+              "type": "file_exists",
+              "path": "CLAUDE.md",
+              "severity": "minor"
+            }
+          ]
+        },
+        {
+          "name": "claude-code-harness",
+          "owner": "cursorvers",
+          "checks": [
+            {
+              "id": "harness-health",
+              "name": "ハーネス健全性",
+              "type": "workflow_status",
+              "workflows": ["ci.yml"],
+              "expectedState": "active",
+              "severity": "minor"
+            }
+          ]
+        }
+      ]
+    }
+  },
+
+  "healthChecks": {
+    "apis": [
+      {
+        "id": "manus-api",
+        "name": "Manus API 接続性",
+        "url": "https://api.manus.im/health",
+        "method": "GET",
+        "expectedStatus": 200,
+        "timeout": 10000,
+        "severity": "severe"
+      },
+      {
+        "id": "supabase-api",
+        "name": "Supabase API 接続性",
+        "urlEnvVar": "SUPABASE_URL",
+        "path": "/rest/v1/",
+        "method": "GET",
+        "expectedStatus": [200, 401],
+        "timeout": 10000,
+        "severity": "severe"
+      }
+    ],
+    "secrets": [
+      {
+        "id": "gh-pat",
+        "name": "GitHub PAT",
+        "secretName": "GH_PAT",
+        "maxAgeDays": 90,
+        "severity": "severe"
+      },
+      {
+        "id": "manus-api-key",
+        "name": "Manus API Key",
+        "secretName": "MANUS_API_KEY",
+        "maxAgeDays": 180,
+        "severity": "severe"
+      },
+      {
+        "id": "line-channel-secret",
+        "name": "LINE Channel Secret",
+        "secretName": "LINE_CHANNEL_SECRET",
+        "maxAgeDays": 365,
+        "severity": "severe"
+      }
+    ]
+  },
+
+  "fallback": {
+    "onAuditFailure": {
+      "action": "create_github_issue",
+      "template": "audit-failure-template.md"
+    },
+    "onNotificationFailure": {
+      "action": "retry_with_email",
+      "retryCount": 3
+    },
+    "onManusUnavailable": {
+      "action": "queue_for_manual_review",
+      "queueLocation": "github_issues"
+    }
+  }
+}

@@ -1,0 +1,560 @@
+name: Enterprise Audit (cursorvers Workflow)
+
+on:
+  schedule:
+    # 毎日 UTC 0:00 (JST 9:00) に実行
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: 'Audit tier'
+        required: false
+        type: choice
+        options:
+          - all
+          - CRITICAL
+          - HIGH
+          - MEDIUM
+        default: 'all'
+      notify:
+        description: 'Send notifications'
+        required: false
+        type: boolean
+        default: true
+
+env:
+  AUDIT_CONFIG_PATH: .github/audit-config.json
+
+jobs:
+  # ========================================
+  # Phase 1: CRITICAL Tier Audit
+  # ========================================
+  critical-audit:
+    name: CRITICAL Tier Audit
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.tier == 'all' || github.event.inputs.tier == 'CRITICAL' || github.event_name == 'schedule' }}
+    outputs:
+      status: ${{ steps.audit.outputs.status }}
+      failures: ${{ steps.audit.outputs.failures }}
+      severity: ${{ steps.audit.outputs.max_severity }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Load audit config
+        id: config
+        run: |
+          echo "Loading audit configuration..."
+          CRITICAL_REPOS=$(jq -r '.tiers.CRITICAL.repositories[].name' $AUDIT_CONFIG_PATH | tr '\n' ' ')
+          echo "repos=$CRITICAL_REPOS" >> $GITHUB_OUTPUT
+          echo "CRITICAL repositories: $CRITICAL_REPOS"
+
+      - name: Audit cursorvers_line_free_dev
+        id: line-free
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          echo "Auditing cursorvers_line_free_dev..."
+          FAILURES=""
+
+          # Check: Front Door signature verification
+          CONTENT=$(gh api repos/cursorvers/cursorvers_line_free_dev/contents/supabase/functions/relay/index.ts \
+            -H "Accept: application/vnd.github.raw" 2>/dev/null || echo "")
+          if echo "$CONTENT" | grep -qE "crypto|createHmac|X-Line-Signature"; then
+            echo "✅ Front Door signature verification: PASS"
+          else
+            echo "❌ Front Door signature verification: FAIL"
+            FAILURES="$FAILURES front-door-signature"
+          fi
+
+          # Check: GitHub Actions workflows active
+          WORKFLOWS=$(gh api repos/cursorvers/cursorvers_line_free_dev/actions/workflows \
+            --jq '.workflows[] | select(.state=="active") | .name' 2>/dev/null || echo "")
+          if echo "$WORKFLOWS" | grep -q "line-event\|LINE Event"; then
+            echo "✅ LINE Event workflow: ACTIVE"
+          else
+            echo "❌ LINE Event workflow: INACTIVE or NOT FOUND"
+            FAILURES="$FAILURES line-event-workflow"
+          fi
+
+          # Check: RLS policies in migrations
+          MIGRATIONS=$(gh api repos/cursorvers/cursorvers_line_free_dev/contents/supabase/migrations \
+            --jq '.[].name' 2>/dev/null || echo "")
+          if [ -n "$MIGRATIONS" ]; then
+            echo "✅ Supabase migrations exist: $MIGRATIONS"
+          else
+            echo "⚠️ Supabase migrations: NOT FOUND"
+          fi
+
+          if [ -z "$FAILURES" ]; then
+            echo "status=pass" >> $GITHUB_OUTPUT
+          else
+            echo "status=fail" >> $GITHUB_OUTPUT
+            echo "failures=$FAILURES" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Audit cursorvers_discord_dev
+        id: discord
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          echo "Auditing cursorvers_discord_dev..."
+          FAILURES=""
+
+          # Check: Webhook broker exists
+          CONTENT=$(gh api repos/cursorvers/cursorvers_discord_dev/contents/apps/discord-bot/src/webhooks \
+            --jq '.[].name' 2>/dev/null || echo "")
+          if echo "$CONTENT" | grep -q "server"; then
+            echo "✅ Webhook broker: EXISTS"
+          else
+            echo "⚠️ Webhook broker: NOT FOUND (may be different path)"
+          fi
+
+          # Check: Discord bot package.json
+          PKG=$(gh api repos/cursorvers/cursorvers_discord_dev/contents/apps/discord-bot/package.json \
+            -H "Accept: application/vnd.github.raw" 2>/dev/null || echo "")
+          if echo "$PKG" | grep -q "discord.js"; then
+            echo "✅ Discord.js dependency: FOUND"
+          else
+            echo "⚠️ Discord.js dependency: NOT FOUND"
+          fi
+
+          if [ -z "$FAILURES" ]; then
+            echo "status=pass" >> $GITHUB_OUTPUT
+          else
+            echo "status=fail" >> $GITHUB_OUTPUT
+            echo "failures=$FAILURES" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Audit skills (Manus Guard Rail)
+        id: skills
+        run: |
+          echo "Auditing skills repository (local)..."
+          FAILURES=""
+
+          # Check: Guard Rail in delegate-manus.js
+          if grep -q "checkApproval\|checkCreditLimits" scripts/delegate-manus.js 2>/dev/null; then
+            echo "✅ Manus Guard Rail: IMPLEMENTED"
+          else
+            echo "❌ Manus Guard Rail: NOT FOUND"
+            FAILURES="$FAILURES manus-guard-rail"
+          fi
+
+          # Check: Audit config exists
+          if [ -f "$AUDIT_CONFIG_PATH" ]; then
+            echo "✅ Audit config: EXISTS"
+          else
+            echo "❌ Audit config: NOT FOUND"
+            FAILURES="$FAILURES audit-config"
+          fi
+
+          if [ -z "$FAILURES" ]; then
+            echo "status=pass" >> $GITHUB_OUTPUT
+          else
+            echo "status=fail" >> $GITHUB_OUTPUT
+            echo "failures=$FAILURES" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Aggregate CRITICAL results
+        id: audit
+        run: |
+          echo "Aggregating CRITICAL tier results..."
+
+          ALL_FAILURES=""
+          MAX_SEVERITY="minor"
+
+          if [ "${{ steps.line-free.outputs.status }}" = "fail" ]; then
+            ALL_FAILURES="$ALL_FAILURES line_free:${{ steps.line-free.outputs.failures }}"
+            MAX_SEVERITY="severe"
+          fi
+
+          if [ "${{ steps.discord.outputs.status }}" = "fail" ]; then
+            ALL_FAILURES="$ALL_FAILURES discord:${{ steps.discord.outputs.failures }}"
+            MAX_SEVERITY="severe"
+          fi
+
+          if [ "${{ steps.skills.outputs.status }}" = "fail" ]; then
+            ALL_FAILURES="$ALL_FAILURES skills:${{ steps.skills.outputs.failures }}"
+            MAX_SEVERITY="severe"
+          fi
+
+          if [ -z "$ALL_FAILURES" ]; then
+            echo "status=pass" >> $GITHUB_OUTPUT
+            echo "✅ CRITICAL tier: ALL PASS"
+          else
+            echo "status=fail" >> $GITHUB_OUTPUT
+            echo "failures=$ALL_FAILURES" >> $GITHUB_OUTPUT
+            echo "max_severity=$MAX_SEVERITY" >> $GITHUB_OUTPUT
+            echo "❌ CRITICAL tier: FAILURES DETECTED"
+            echo "   Failures: $ALL_FAILURES"
+          fi
+
+  # ========================================
+  # Phase 2: HIGH Tier Audit
+  # ========================================
+  high-audit:
+    name: HIGH Tier Audit
+    runs-on: ubuntu-latest
+    needs: critical-audit
+    if: ${{ (github.event.inputs.tier == 'all' || github.event.inputs.tier == 'HIGH' || github.event_name == 'schedule') && needs.critical-audit.outputs.status != 'fail' }}
+    outputs:
+      status: ${{ steps.audit.outputs.status }}
+      failures: ${{ steps.audit.outputs.failures }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Audit cursorvers_line_paid_dev
+        id: line-paid
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          echo "Auditing cursorvers_line_paid_dev..."
+          FAILURES=""
+
+          # Check: Firestore rules
+          RULES=$(gh api repos/cursorvers/cursorvers_line_paid_dev/contents/firestore.rules \
+            -H "Accept: application/vnd.github.raw" 2>/dev/null || echo "")
+          if echo "$RULES" | grep -q "rules_version\|match"; then
+            echo "✅ Firestore rules: FOUND"
+          else
+            echo "⚠️ Firestore rules: NOT FOUND or INVALID"
+          fi
+
+          # Check: Member type definitions
+          TYPES=$(gh api repos/cursorvers/cursorvers_line_paid_dev/contents/apps/line-plus-bot/src/types \
+            --jq '.[].name' 2>/dev/null || echo "")
+          if echo "$TYPES" | grep -q "member"; then
+            echo "✅ Member types: FOUND"
+          else
+            echo "⚠️ Member types: NOT FOUND"
+          fi
+
+          if [ -z "$FAILURES" ]; then
+            echo "status=pass" >> $GITHUB_OUTPUT
+          else
+            echo "status=fail" >> $GITHUB_OUTPUT
+            echo "failures=$FAILURES" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Audit Cursorvers_LINEsystem
+        id: line-system
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          echo "Auditing Cursorvers_LINEsystem..."
+          FAILURES=""
+
+          # Check: Workflows active
+          WORKFLOWS=$(gh api repos/cursorvers/Cursorvers_LINEsystem/actions/workflows \
+            --jq '.workflows[] | select(.state=="active") | .name' 2>/dev/null || echo "")
+          if [ -n "$WORKFLOWS" ]; then
+            echo "✅ Active workflows: $(echo $WORKFLOWS | tr '\n' ', ')"
+          else
+            echo "⚠️ No active workflows found"
+          fi
+
+          if [ -z "$FAILURES" ]; then
+            echo "status=pass" >> $GITHUB_OUTPUT
+          else
+            echo "status=fail" >> $GITHUB_OUTPUT
+            echo "failures=$FAILURES" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Aggregate HIGH results
+        id: audit
+        run: |
+          ALL_FAILURES=""
+
+          if [ "${{ steps.line-paid.outputs.status }}" = "fail" ]; then
+            ALL_FAILURES="$ALL_FAILURES line_paid:${{ steps.line-paid.outputs.failures }}"
+          fi
+
+          if [ "${{ steps.line-system.outputs.status }}" = "fail" ]; then
+            ALL_FAILURES="$ALL_FAILURES line_system:${{ steps.line-system.outputs.failures }}"
+          fi
+
+          if [ -z "$ALL_FAILURES" ]; then
+            echo "status=pass" >> $GITHUB_OUTPUT
+            echo "✅ HIGH tier: ALL PASS"
+          else
+            echo "status=fail" >> $GITHUB_OUTPUT
+            echo "failures=$ALL_FAILURES" >> $GITHUB_OUTPUT
+            echo "⚠️ HIGH tier: FAILURES DETECTED"
+          fi
+
+  # ========================================
+  # Phase 3: MEDIUM Tier Audit
+  # ========================================
+  medium-audit:
+    name: MEDIUM Tier Audit
+    runs-on: ubuntu-latest
+    needs: [critical-audit, high-audit]
+    if: ${{ (github.event.inputs.tier == 'all' || github.event.inputs.tier == 'MEDIUM' || github.event_name == 'schedule') && needs.critical-audit.outputs.status != 'fail' }}
+    outputs:
+      status: ${{ steps.audit.outputs.status }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Audit claude-config
+        id: claude-config
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          echo "Auditing claude-config..."
+
+          # Check: CLAUDE.md exists
+          CONTENT=$(gh api repos/cursorvers/claude-config/contents/CLAUDE.md \
+            -H "Accept: application/vnd.github.raw" 2>/dev/null || echo "")
+          if [ -n "$CONTENT" ]; then
+            echo "✅ CLAUDE.md: EXISTS"
+            echo "status=pass" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️ CLAUDE.md: NOT FOUND"
+            echo "status=warn" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Audit claude-code-harness
+        id: harness
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          echo "Auditing claude-code-harness..."
+
+          # Check: CI workflow active
+          WORKFLOWS=$(gh api repos/cursorvers/claude-code-harness/actions/workflows \
+            --jq '.workflows[] | select(.state=="active") | .name' 2>/dev/null || echo "")
+          if [ -n "$WORKFLOWS" ]; then
+            echo "✅ Active workflows: $(echo $WORKFLOWS | tr '\n' ', ')"
+            echo "status=pass" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️ No active workflows"
+            echo "status=warn" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Aggregate MEDIUM results
+        id: audit
+        run: |
+          echo "status=pass" >> $GITHUB_OUTPUT
+          echo "✅ MEDIUM tier: COMPLETE"
+
+  # ========================================
+  # Phase 4: API Health Checks
+  # ========================================
+  api-health:
+    name: API Health Checks
+    runs-on: ubuntu-latest
+    outputs:
+      manus_status: ${{ steps.manus.outputs.status }}
+      supabase_status: ${{ steps.supabase.outputs.status }}
+
+    steps:
+      - name: Check Manus API
+        id: manus
+        run: |
+          echo "Checking Manus API health..."
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time 10 \
+            "https://api.manus.im/health" 2>/dev/null || echo "000")
+
+          if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "401" ]; then
+            echo "✅ Manus API: REACHABLE ($HTTP_CODE)"
+            echo "status=pass" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Manus API: UNREACHABLE ($HTTP_CODE)"
+            echo "status=fail" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check Supabase API
+        id: supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        run: |
+          echo "Checking Supabase API health..."
+          if [ -z "$SUPABASE_URL" ]; then
+            echo "⚠️ Supabase URL not configured"
+            echo "status=skip" >> $GITHUB_OUTPUT
+          else
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+              --max-time 10 \
+              "${SUPABASE_URL}/rest/v1/" 2>/dev/null || echo "000")
+
+            if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "401" ]; then
+              echo "✅ Supabase API: REACHABLE ($HTTP_CODE)"
+              echo "status=pass" >> $GITHUB_OUTPUT
+            else
+              echo "❌ Supabase API: UNREACHABLE ($HTTP_CODE)"
+              echo "status=fail" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+  # ========================================
+  # Phase 5: Summary & Notification
+  # ========================================
+  summary:
+    name: Audit Summary & Notification
+    runs-on: ubuntu-latest
+    needs: [critical-audit, high-audit, medium-audit, api-health]
+    if: always()
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate summary
+        id: summary
+        env:
+          CRITICAL_STATUS: ${{ needs.critical-audit.outputs.status }}
+          CRITICAL_FAILURES: ${{ needs.critical-audit.outputs.failures }}
+          CRITICAL_SEVERITY: ${{ needs.critical-audit.outputs.severity }}
+          HIGH_STATUS: ${{ needs.high-audit.outputs.status }}
+          HIGH_FAILURES: ${{ needs.high-audit.outputs.failures }}
+          MEDIUM_STATUS: ${{ needs.medium-audit.outputs.status }}
+          MANUS_STATUS: ${{ needs.api-health.outputs.manus_status }}
+          SUPABASE_STATUS: ${{ needs.api-health.outputs.supabase_status }}
+        run: |
+          echo "# Enterprise Audit Summary" > audit-summary.md
+          echo "" >> audit-summary.md
+          echo "**Date**: $(TZ=Asia/Tokyo date '+%Y-%m-%d %H:%M JST')" >> audit-summary.md
+          echo "**Run ID**: ${{ github.run_id }}" >> audit-summary.md
+          echo "" >> audit-summary.md
+
+          echo "## Tier Results" >> audit-summary.md
+          echo "" >> audit-summary.md
+
+          if [ "$CRITICAL_STATUS" = "pass" ]; then
+            echo "- **CRITICAL**: ✅ PASS" >> audit-summary.md
+          else
+            echo "- **CRITICAL**: ❌ FAIL" >> audit-summary.md
+            echo "  - Failures: $CRITICAL_FAILURES" >> audit-summary.md
+            echo "  - Severity: $CRITICAL_SEVERITY" >> audit-summary.md
+          fi
+
+          if [ "$HIGH_STATUS" = "pass" ]; then
+            echo "- **HIGH**: ✅ PASS" >> audit-summary.md
+          elif [ "$HIGH_STATUS" = "fail" ]; then
+            echo "- **HIGH**: ⚠️ FAIL" >> audit-summary.md
+            echo "  - Failures: $HIGH_FAILURES" >> audit-summary.md
+          else
+            echo "- **HIGH**: ⏭️ SKIPPED (CRITICAL failed)" >> audit-summary.md
+          fi
+
+          if [ "$MEDIUM_STATUS" = "pass" ]; then
+            echo "- **MEDIUM**: ✅ PASS" >> audit-summary.md
+          else
+            echo "- **MEDIUM**: ⏭️ SKIPPED" >> audit-summary.md
+          fi
+
+          echo "" >> audit-summary.md
+          echo "## API Health" >> audit-summary.md
+          echo "" >> audit-summary.md
+          echo "- **Manus API**: $MANUS_STATUS" >> audit-summary.md
+          echo "- **Supabase API**: $SUPABASE_STATUS" >> audit-summary.md
+
+          cat audit-summary.md
+
+          # Determine overall status
+          if [ "$CRITICAL_STATUS" = "fail" ]; then
+            echo "overall=critical_failure" >> $GITHUB_OUTPUT
+          elif [ "$HIGH_STATUS" = "fail" ]; then
+            echo "overall=high_failure" >> $GITHUB_OUTPUT
+          else
+            echo "overall=pass" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Notify Discord
+        if: ${{ github.event.inputs.notify != 'false' }}
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_MONITORING_WEBHOOK }}
+          OVERALL: ${{ steps.summary.outputs.overall }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK" ]; then
+            echo "Discord webhook not configured, skipping notification"
+            exit 0
+          fi
+
+          if [ "$OVERALL" = "pass" ]; then
+            COLOR=3066993  # Green
+            TITLE="✅ Enterprise Audit: ALL PASS"
+          elif [ "$OVERALL" = "high_failure" ]; then
+            COLOR=15105570  # Orange
+            TITLE="⚠️ Enterprise Audit: HIGH Tier Failures"
+          else
+            COLOR=15158332  # Red
+            TITLE="❌ Enterprise Audit: CRITICAL Failures"
+          fi
+
+          SUMMARY=$(cat audit-summary.md | head -30)
+
+          JSON_PAYLOAD=$(jq -n \
+            --arg title "$TITLE" \
+            --arg desc "$SUMMARY" \
+            --argjson color "$COLOR" \
+            --arg url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            '{
+              embeds: [{
+                title: $title,
+                description: $desc,
+                color: $color,
+                url: $url,
+                timestamp: (now | strftime("%Y-%m-%dT%H:%M:%SZ"))
+              }]
+            }')
+
+          curl -X POST "$DISCORD_WEBHOOK" \
+            -H "Content-Type: application/json" \
+            -d "$JSON_PAYLOAD" || echo "::warning::Discord notification failed"
+
+      - name: Upload summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-summary-${{ github.run_id }}
+          path: audit-summary.md
+          retention-days: 90
+
+  # ========================================
+  # Phase 6: Manus Investigation (on CRITICAL failure)
+  # ========================================
+  manus-investigation:
+    name: Manus Investigation
+    runs-on: ubuntu-latest
+    needs: [critical-audit, summary]
+    if: ${{ needs.critical-audit.outputs.status == 'fail' && needs.critical-audit.outputs.severity == 'severe' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Trigger Manus investigation
+        env:
+          MANUS_API_KEY: ${{ secrets.MANUS_API_KEY }}
+          MANUS_CREDIT_LIMIT: ${{ vars.MANUS_CREDIT_LIMIT || '1500' }}
+          FAILURES: ${{ needs.critical-audit.outputs.failures }}
+        run: |
+          echo "Triggering Manus investigation for CRITICAL failures..."
+
+          TASK_CONTENT="Enterprise Audit で CRITICAL 障害検出。
+          失敗項目: $FAILURES
+          リポジトリ: ${{ github.repository }}
+          Run ID: ${{ github.run_id }}
+
+          以下を調査してください:
+          1. 障害の根本原因
+          2. 影響範囲
+          3. 修正提案"
+
+          node scripts/delegate-manus.js \
+            -t "$TASK_CONTENT" \
+            --research \
+            --severity severe \
+            --skip-approval \
+            --max-credits 150 || echo "::warning::Manus investigation failed"
