@@ -38,6 +38,15 @@
               "severity": "severe"
             },
             {
+              "id": "timing-safe-comparison",
+              "name": "タイミングセーフ比較",
+              "type": "file_contains",
+              "path": "functions/relay/index.ts",
+              "pattern": "timingSafeEqual|crypto\\.subtle\\.timingSafeEqual",
+              "severity": "severe",
+              "note": "Bearer トークン比較でタイミング攻撃を防ぐ"
+            },
+            {
               "id": "github-actions-active",
               "name": "GitHub Actions Workflow 有効化",
               "type": "workflow_status",
@@ -51,7 +60,17 @@
               "type": "file_contains",
               "path": "supabase/migrations/*.sql",
               "pattern": "CREATE POLICY|ALTER TABLE.*ENABLE ROW LEVEL SECURITY",
-              "severity": "severe"
+              "severity": "severe",
+              "note": "progress_events, line_members テーブルに RLS 必須"
+            },
+            {
+              "id": "database-rls",
+              "name": "Database RLS ポリシー",
+              "type": "file_contains",
+              "path": "database/migrations/*.sql",
+              "pattern": "CREATE POLICY|ENABLE ROW LEVEL SECURITY",
+              "severity": "severe",
+              "note": "Subagent発見: 0001_init_tables.sql に RLS 未定義"
             },
             {
               "id": "deduplication",
@@ -76,18 +95,51 @@
               "severity": "severe"
             },
             {
+              "id": "timing-safe-comparison",
+              "name": "タイミングセーフ比較",
+              "type": "file_contains",
+              "path": "apps/discord-bot/src/webhooks/server.ts",
+              "pattern": "timingSafeEqual",
+              "severity": "severe",
+              "note": "Subagent発見: server.ts で標準比較使用（タイミング攻撃リスク）"
+            },
+            {
+              "id": "edge-function-timing-safe",
+              "name": "Edge Function タイミングセーフ",
+              "type": "file_contains",
+              "path": "functions/relay/index.ts",
+              "pattern": "timingSafeEqual",
+              "severity": "severe"
+            },
+            {
               "id": "phi-security-filter",
               "name": "PHI セキュリティフィルタ",
               "type": "file_contains",
-              "path": "apps/discord-bot/src/**/*.ts",
-              "pattern": "PHI|sanitize|redact|mask",
+              "path": "apps/discord-bot/src/middleware/security.ts",
+              "pattern": "detectSensitiveTokens|PHI|REGEXES",
               "severity": "severe"
+            },
+            {
+              "id": "phi-escalation",
+              "name": "PHI エスカレーション",
+              "type": "file_contains",
+              "path": "apps/discord-bot/src/middleware/security.ts",
+              "pattern": "resolveEscalationChannel|notifyOpsBulletins",
+              "severity": "moderate"
             },
             {
               "id": "heartbeat-monitor",
               "name": "Heartbeat 監視",
               "type": "file_exists",
-              "path": "apps/discord-bot/src/**/heartbeat*.ts",
+              "path": "apps/discord-bot/src/health/monitor.ts",
+              "severity": "moderate"
+            },
+            {
+              "id": "heartbeat-interval",
+              "name": "Heartbeat 間隔設定",
+              "type": "file_contains",
+              "path": "apps/discord-bot/src/health/monitor.ts",
+              "pattern": "HEARTBEAT_INTERVAL_MS",
               "severity": "moderate"
             }
           ]
@@ -131,7 +183,16 @@
               "name": "Firestore Security Rules",
               "type": "file_exists",
               "path": "firestore.rules",
-              "severity": "moderate"
+              "severity": "severe",
+              "note": "Subagent発見: firestore.rules ファイルが存在しない - CRITICAL"
+            },
+            {
+              "id": "line-signature-verification",
+              "name": "LINE 署名検証",
+              "type": "file_contains",
+              "path": "apps/line-plus-bot/src/security/lineSignature.ts",
+              "pattern": "createHmac|timingSafeEqual",
+              "severity": "severe"
             },
             {
               "id": "member-management",
@@ -139,6 +200,31 @@
               "type": "file_contains",
               "path": "apps/line-plus-bot/src/**/*.ts",
               "pattern": "subscription|member|updateMember",
+              "severity": "moderate"
+            },
+            {
+              "id": "subscription-state",
+              "name": "サブスクリプション状態管理",
+              "type": "file_contains",
+              "path": "apps/line-plus-bot/src/types/member.ts",
+              "pattern": "planType|status|active|paused|cancelled",
+              "severity": "moderate",
+              "note": "Subagent発見: expiresAt, renewalAt フィールド未実装"
+            },
+            {
+              "id": "notification-idempotency",
+              "name": "通知の冪等性",
+              "type": "file_contains",
+              "path": "apps/line-plus-bot/src/services/notificationService.ts",
+              "pattern": "dedup|idempotent|deadLetter",
+              "severity": "moderate"
+            },
+            {
+              "id": "cloud-run-secrets",
+              "name": "Cloud Run シークレット管理",
+              "type": "file_contains",
+              "path": "infra/cloud-run/webhook.service.yaml",
+              "pattern": "secretKeyRef|Secret Manager",
               "severity": "moderate"
             }
           ]
