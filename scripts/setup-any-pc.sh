@@ -203,7 +203,9 @@ fi
 echo ""
 echo "📦 npm依存関係インストール..."
 if [ -f "$SKILLS_DIR/package.json" ]; then
-  cd "$SKILLS_DIR" && npm install --silent 2>/dev/null || npm install
+  if ! (cd "$SKILLS_DIR" && npm install --silent 2>/dev/null); then
+    (cd "$SKILLS_DIR" && npm install)
+  fi
   echo -e "${GREEN}✓ npm install完了${NC}"
 fi
 

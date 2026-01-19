@@ -113,9 +113,9 @@ check_repo_status() {
   local status
   status=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
   local ahead
-  ahead=$(git rev-list --count @{u}..HEAD 2>/dev/null || echo "?")
+  ahead=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo "?")
   local behind
-  behind=$(git rev-list --count HEAD..@{u} 2>/dev/null || echo "?")
+  behind=$(git rev-list --count 'HEAD..@{u}' 2>/dev/null || echo "?")
 
   if [ "$status" -gt 0 ]; then
     echo -e "${YELLOW}⚠ $name: ${status}件の変更あり (${branch})${NC}"
