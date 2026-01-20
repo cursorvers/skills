@@ -85,8 +85,8 @@ const CONFIG = {
     default: { base: 30, maxMultiplier: 1.2 }
   },
   approval: manusConfig.approval || {
-    autoApprove: { maxCredits: 50, taskTypes: ['default'] },
-    requireConsensus: { minCredits: 51, taskTypes: ['browser', 'research'] },
+    autoApprove: { maxCredits: 50, taskTypes: ['default', 'alert'] },
+    requireConsensus: { minCredits: 51, taskTypes: ['browser', 'research', 'market-research', 'seo-deepdive'] },
     requireUserApproval: { minCredits: 150, keywords: ['本番', 'production'] }
   },
   thresholds: manusConfig.thresholds || {},
