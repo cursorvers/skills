@@ -14,6 +14,9 @@
  *   -t, --task        タスク内容（必須）
  *   --browser         ブラウザ操作タスク
  *   --research        長時間リサーチタスク
+ *   --market-research Similarweb市場調査（12ヶ月トラフィック、SEO、競合）
+ *   --alert           異常検知アラート（トラフィック急変、バウンス率悪化）
+ *   --seo             SEOキーワード深掘り
  *   --estimate        クレジット消費量を見積もり（実行しない）
  *   --max-credits     最大クレジット消費量（デフォルト: 100）
  *   --severity        異常レベル (minor|moderate|severe)
@@ -76,6 +79,9 @@ const CONFIG = {
   costPerTask: manusConfig.costPerTask || {
     browser: { base: 50, maxMultiplier: 2.0 },
     research: { base: 100, maxMultiplier: 1.5 },
+    'market-research': { base: 100, maxMultiplier: 1.5 },
+    'alert': { base: 40, maxMultiplier: 1.2 },
+    'seo-deepdive': { base: 80, maxMultiplier: 1.8 },
     default: { base: 30, maxMultiplier: 1.2 }
   },
   approval: manusConfig.approval || {
@@ -109,6 +115,16 @@ for (let i = 0; i < args.length; i++) {
       break;
     case '--research':
       taskType = 'research';
+      break;
+    case '--market-research':
+      taskType = 'market-research';
+      break;
+    case '--alert':
+      taskType = 'alert';
+      break;
+    case '--seo':
+    case '--seo-deepdive':
+      taskType = 'seo-deepdive';
       break;
     case '--estimate':
       estimateOnly = true;
