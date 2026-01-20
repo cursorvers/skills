@@ -45,10 +45,10 @@ gh ssh-key add ~/.ssh/id_ed25519.pub --title "Mac Mini"
 
 ```bash
 # 作業ディレクトリ作成
-mkdir -p ~/Dev
+mkdir -p /Users/masayuki_otawara/Dev
 
 # skills リポジトリ
-git clone git@github.com:cursorvers/skills.git ~/Dev/skills
+git clone git@github.com:cursorvers/skills.git /Users/masayuki_otawara/Dev/skills
 
 # claude-config リポジトリ
 git clone git@github.com:cursorvers/claude-config.git ~/.claude
@@ -59,7 +59,7 @@ git clone git@github.com:cursorvers/claude-config.git ~/.claude
 ## Step 4: セットアップスクリプト実行
 
 ```bash
-cd ~/Dev/skills
+cd /Users/masayuki_otawara/Dev/skills
 chmod +x scripts/setup-any-pc.sh
 ./scripts/setup-any-pc.sh
 ```
@@ -77,7 +77,7 @@ export GEMINI_API_KEY="your-gemini-api-key"
 export OPENAI_API_KEY="your-openai-api-key"
 
 # Hybrid Cloud Auto-Sync
-source ~/Dev/skills/scripts/hooks/cd-extension.zsh
+source /Users/masayuki_otawara/Dev/skills/scripts/hooks/cd-extension.zsh
 ```
 
 設定を反映:
@@ -99,7 +99,7 @@ npm install -g @anthropic-ai/claude-code
 ## Step 7: Git Hooks インストール
 
 ```bash
-cd ~/Dev/skills
+cd /Users/masayuki_otawara/Dev/skills
 ./scripts/install-hooks.sh
 ```
 
@@ -112,7 +112,7 @@ cd ~/Dev/skills
 echo $ZAI_API_KEY | head -c 10
 
 # Git 同期確認
-cd ~/Dev/skills
+cd /Users/masayuki_otawara/Dev/skills
 git status
 
 # Claude Code 起動
