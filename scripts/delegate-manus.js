@@ -464,7 +464,10 @@ async function main() {
     console.log(`Task created: ${created.task_id}`);
     console.log(`Task URL: ${created.task_url || 'N/A'}`);
 
-    console.log('\nWaiting for completion...');
+    console.log('\nWaiting for task to be ready (5s)...');
+    await new Promise(r => setTimeout(r, 5000));
+
+    console.log('Polling for completion...');
     const result = await pollTaskCompletion(created.task_id);
 
     console.log('\nTask completed!');
