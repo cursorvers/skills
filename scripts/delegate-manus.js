@@ -461,10 +461,11 @@ async function main() {
   try {
     console.log('\nCreating task...');
     const created = await createTask(task, taskType);
-    console.log(`Task created: ${created.id}`);
+    console.log(`Task created: ${created.task_id}`);
+    console.log(`Task URL: ${created.task_url || 'N/A'}`);
 
     console.log('\nWaiting for completion...');
-    const result = await pollTaskCompletion(created.id);
+    const result = await pollTaskCompletion(created.task_id);
 
     console.log('\nTask completed!');
     console.log('='.repeat(50));
