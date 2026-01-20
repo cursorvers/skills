@@ -64,7 +64,7 @@ const QUALITY_GATES = loadQualityGates();
 const manusConfig = QUALITY_GATES?.manus || {};
 
 const CONFIG = {
-  baseURL: 'https://api.manus.im',
+  baseURL: 'https://api.manus.ai',
   apiVersion: 'v1',
   timeout: 300000,
   pollInterval: 30000,
@@ -308,7 +308,7 @@ function makeRequest(method, urlPath, data = null) {
       path: url.pathname,
       method,
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        'API_KEY': apiKey,
         'Content-Type': 'application/json',
         'Accept': 'application/json'
       },
