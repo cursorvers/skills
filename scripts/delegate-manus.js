@@ -347,12 +347,11 @@ function makeRequest(method, urlPath, data = null) {
 
 async function createTask(taskContent, type) {
   const payload = {
-    content: taskContent,
-    type: type,
+    prompt: taskContent,
     metadata: {
+      type: type,
       source: 'orchestra-delegator',
-      delegated_at: new Date().toISOString(),
-      guard_rail_version: '2.0'
+      delegated_at: new Date().toISOString()
     }
   };
 
